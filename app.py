@@ -60,8 +60,13 @@ except Exception as e:
     st.error(f"❌ Erro de conexão com o Google Sheets: {e}")
     st.stop()
 
+# Definição Dinâmica de Anos (Piloto Automático)
+ano_atual = datetime.now().year
+ano_seguinte = ano_atual + 1
+anos_passados_base = max(0, ano_atual - 2026)
+
 st.title("🔐 Gestão de Cauções de Aluguel — MRC Imóveis")
-st.write("Controle de depósitos, taxas de reajuste customizáveis e reserva de juros futuros.")
+st.write(f"Controle de depósitos, projeções automáticas ({ano_atual} ➔ {ano_seguinte}) e reserva de juros.")
 
 aba_dash, aba_consulta, aba_novo, aba_quitar, aba_editar = st.tabs([
     "📊 Dashboard & Projeções", 
@@ -74,7 +79,7 @@ aba_dash, aba_consulta, aba_novo, aba_quitar, aba_editar = st.tabs([
 dados_raw = sheet.get_all_records()
 df = pd.DataFrame(dados_raw) if dados_raw else pd.DataFrame()
 
-# Tratamento Numérico
+# Funções de Tratamento Numérico
 def tratar_valor_num(v):
     v_str = str(v).replace("R$", "").replace(".", "").replace(",", ".").strip()
     try:
@@ -94,12 +99,16 @@ if not df.empty and "Projeção Dez/26 (R$)" in df.columns:
     df["Projecao_26_Num"] = df["Projeção Dez/26 (R$)"].apply(tratar_valor_num)
     df["Taxa_Num"] = df["% Taxa Anual"].apply(tratar_taxa_num)
     
-    # Cálculo dinâmico para o próximo ano com base na taxa de cada contrato
-    df["Projecao_27_Num"] = df.apply(
-        lambda r: round(r["Projecao_26_Num"] * (1.0 + r["Taxa_Num"]), 2) if r["Projecao_26_Num"] > 0 else 0.0,
+    # Cálculo Dinâmico da Virada de Ano
+    df["Projecao_Atual_Num"] = df.apply(
+        lambda r: round(r["Projecao_26_Num"] * ((1.0 + r["Taxa_Num"]) ** anos_passados_base), 2) if r["Projecao_26_Num"] > 0 else 0.0,
         axis=1
     )
-    df["Reserva_Juros"] = df["Projecao_27_Num"] - df["Projecao_26_Num"]
+    df["Projecao_Seguinte_Num"] = df.apply(
+        lambda r: round(r["Projecao_Atual_Num"] * (1.0 + r["Taxa_Num"]), 2) if r["Projecao_Atual_Num"] > 0 else 0.0,
+        axis=1
+    )
+    df["Reserva_Juros"] = df["Projecao_Seguinte_Num"] - df["Projecao_Atual_Num"]
 else:
     df = pd.DataFrame(columns=[
         "ID", "Imóvel", "Locatário", "CPF/CNPJ", "Data Inicial", "Valor Inicial (R$)", 
@@ -109,7 +118,8 @@ else:
     df["Valor_Ini_Num"] = 0.0
     df["Projecao_26_Num"] = 0.0
     df["Taxa_Num"] = 0.02
-    df["Projecao_27_Num"] = 0.0
+    df["Projecao_Atual_Num"] = 0.0
+    df["Projecao_Seguinte_Num"] = 0.0
     df["Reserva_Juros"] = 0.0
 
 # --- ABA 1: DASHBOARD ---
@@ -121,29 +131,29 @@ with aba_dash:
         df_quitadas = df[df["Status"].astype(str).str.upper() != "ATIVA"]
         
         tot_ini_ativas = df_ativas["Valor_Ini_Num"].sum()
-        tot_26_ativas = df_ativas["Projecao_26_Num"].sum()
-        tot_27_ativas = df_ativas["Projecao_27_Num"].sum()
+        tot_atual_ativas = df_ativas["Projecao_Atual_Num"].sum()
+        tot_seguinte_ativas = df_ativas["Projecao_Seguinte_Num"].sum()
         tot_juros_reserva = df_ativas["Reserva_Juros"].sum()
         
-        st.subheader("📊 Resumo Geral de Cauções Ativas (Projeção 2026 ➔ 2027)")
+        st.subheader(f"📊 Resumo Geral de Cauções Ativas (Projeção {ano_atual} ➔ {ano_seguinte})")
         
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Contratos Ativos", f"{len(df_ativas)}")
-        c2.metric("Projeção Dez/2026", f"R$ {tot_26_ativas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        c3.metric("Projeção Dez/2027", f"R$ {tot_27_ativas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        c4.metric("Juros a Guardar (2026 ➔ 2027)", f"R$ {tot_juros_reserva:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), delta=f"+ R$ {tot_juros_reserva:,.2f}")
+        c2.metric(f"Projeção Dez/{ano_atual}", f"R$ {tot_atual_ativas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        c3.metric(f"Projeção Dez/{ano_seguinte}", f"R$ {tot_seguinte_ativas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        c4.metric(f"Juros a Guardar ({ano_atual} ➔ {ano_seguinte})", f"R$ {tot_juros_reserva:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), delta=f"+ R$ {tot_juros_reserva:,.2f}")
         
         st.markdown("---")
         col_g1, col_g2 = st.columns(2)
         
         with col_g1:
-            st.subheader("Saldo Retido por Indexador (Dez/2026)")
+            st.subheader(f"Saldo Retido por Indexador (Dez/{ano_atual})")
             if not df_ativas.empty:
-                fig_idx = px.pie(df_ativas, names="Indexador", values="Projecao_26_Num", hole=0.4, color_discrete_sequence=px.colors.qualitative.Set2)
+                fig_idx = px.pie(df_ativas, names="Indexador", values="Projecao_Atual_Num", hole=0.4, color_discrete_sequence=px.colors.qualitative.Set2)
                 st.plotly_chart(fig_idx, use_container_width=True)
                 
         with col_g2:
-            st.subheader("Top 7 Maiores Reservas de Juros Necessárias")
+            st.subheader(f"Top 7 Maiores Reservas de Juros ({ano_atual} ➔ {ano_seguinte})")
             if not df_ativas.empty:
                 df_top = df_ativas.sort_values("Reserva_Juros", ascending=False).head(7)
                 fig_top = px.bar(df_top, x="Reserva_Juros", y="Locatário", orientation="h", color="Indexador", labels={"Reserva_Juros": "Juros a Guardar (R$)"})
@@ -178,11 +188,14 @@ with aba_consulta:
             
         st.write(f"**Registros encontrados:** {len(df_f)} | **Juros Totais a Guardar:** R$ {df_f['Reserva_Juros'].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
         
-        df_f["Projeção 2026"] = df_f["Projecao_26_Num"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        df_f["Projeção 2027"] = df_f["Projecao_27_Num"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        col_lbl_atual = f"Projeção Dez/{ano_atual}"
+        col_lbl_seg = f"Projeção Dez/{ano_seguinte}"
+        
+        df_f[col_lbl_atual] = df_f["Projecao_Atual_Num"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        df_f[col_lbl_seg] = df_f["Projecao_Seguinte_Num"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
         df_f["Reserva Juros"] = df_f["Reserva_Juros"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
         
-        cols_show = ["ID", "Imóvel", "Locatário", "Valor Inicial (R$)", "Indexador", "% Taxa Anual", "Projeção 2026", "Projeção 2027", "Reserva Juros", "Status"]
+        cols_show = ["ID", "Imóvel", "Locatário", "Valor Inicial (R$)", "Indexador", "% Taxa Anual", col_lbl_atual, col_lbl_seg, "Reserva Juros", "Status"]
         cols_exist = [c for c in cols_show if c in df_f.columns]
         st.dataframe(df_f[cols_exist], use_container_width=True, hide_index=True)
 
@@ -200,7 +213,6 @@ with aba_novo:
         valor_dep = st.number_input("Valor Inicial Depositado (R$) *", min_value=0.0, format="%.2f")
         indexador = st.selectbox("Indexador de Correção *", ["TR", "Poupança (NOVA)", "Poup ant/Nova", "nenhum"])
         
-        # Sugestão dinâmica do percentual com possibilidade de alteração pelo usuário
         sugestao_taxa = 2.0
         if "POUP" in indexador.upper():
             sugestao_taxa = 7.0
@@ -222,9 +234,11 @@ with aba_novo:
                 v_fmt = f"R$ {valor_dep:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                 taxa_fmt = f"{taxa_custom:.1f}%".replace(".", ",")
                 
-                # Projeção inicial (Dez/26 base igual valor depositado se for do ano vigente)
-                p26_fmt = v_fmt
-                p27_calc = valor_dep * (1.0 + (taxa_custom / 100.0))
+                # Cálculo da projeção ancorada no repositório base de 2026
+                p26_calc = valor_dep / ((1.0 + (taxa_custom / 100.0)) ** anos_passados_base) if anos_passados_base > 0 else valor_dep
+                p27_calc = p26_calc * (1.0 + (taxa_custom / 100.0))
+                
+                p26_fmt = f"R$ {p26_calc:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                 p27_fmt = f"R$ {p27_calc:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                 
                 nova_linha = [prox_id, imovel, locatario, cpf_cnpj, dt_fmt, v_fmt, indexador, taxa_fmt, p26_fmt, p27_fmt, "Ativa", "", obs]
@@ -250,7 +264,7 @@ with aba_quitar:
             linha_real_q = idx_q + 2
             dados_q = df.iloc[idx_q]
             
-            st.info(f"Contrato Selecionado: **{dados_q['Imóvel']}** | Inquilino: **{dados_q['Locatário']}** | Base Dez/2026: **R$ {dados_q['Projecao_26_Num']:,.2f}**")
+            st.info(f"Contrato Selecionado: **{dados_q['Imóvel']}** | Inquilino: **{dados_q['Locatário']}** | Projeção Dez/{ano_atual}: **R$ {dados_q['Projecao_Atual_Num']:,.2f}**")
             
             with st.form("form_quitar_caucao"):
                 dt_dev = st.date_input("Data de Devolução / Quitação *", value=datetime.today(), format="DD/MM/YYYY")
