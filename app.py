@@ -13,7 +13,7 @@ try:
 except Exception:
     pass
 
-# 2. Conexão com Google Sheets via ID
+# 2. Conexão com Google Sheets
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -61,7 +61,7 @@ except Exception as e:
     st.stop()
 
 st.title("🔐 Gestão de Cauções de Aluguel — MRC Imóveis")
-st.write("Controle de depósitos, cálculo de rendimentos e provisão de juros futuros.")
+st.write("Controle de depósitos, taxas de reajuste customizáveis e reserva de juros futuros.")
 
 aba_dash, aba_consulta, aba_novo, aba_quitar, aba_editar = st.tabs([
     "📊 Dashboard & Projeções", 
@@ -74,7 +74,7 @@ aba_dash, aba_consulta, aba_novo, aba_quitar, aba_editar = st.tabs([
 dados_raw = sheet.get_all_records()
 df = pd.DataFrame(dados_raw) if dados_raw else pd.DataFrame()
 
-# Tratamento Numérico e Funções de Projeção
+# Tratamento Numérico
 def tratar_valor_num(v):
     v_str = str(v).replace("R$", "").replace(".", "").replace(",", ".").strip()
     try:
@@ -82,55 +82,35 @@ def tratar_valor_num(v):
     except:
         return 0.0
 
-ano_atual = datetime.now().year
-ano_seguinte = ano_atual + 1
-
-def obter_taxa_anual(idx_type):
-    idx = str(idx_type).upper()
-    if "POUP" in idx:
-        return 0.07  # Poupança (7.0% a.a.)
-    elif "NENHUM" in idx:
-        return 0.0
-    return 0.02  # Padrão TR (2.0% a.a.)
-
-def calcular_valor_em_data(row, target_year, target_month=12):
-    v_ini = row.get("Valor_Num", 0.0)
-    dt_str = str(row.get("Data Inicial", "")).strip()
-    
-    if not dt_str or v_ini <= 0:
-        return v_ini
-        
+def tratar_taxa_num(v):
+    v_str = str(v).replace("%", "").replace(",", ".").strip()
     try:
-        dt_ini = pd.to_datetime(dt_str, format="%d/%m/%Y", errors="coerce")
-        if pd.isna(dt_ini):
-            return v_ini
-        
-        meses = (target_year - dt_ini.year) * 12 + (target_month - dt_ini.month)
-        if meses < 0:
-            meses = 0
-            
-        taxa_anual = obter_taxa_anual(row.get("Indexador", "TR"))
-        return round(v_ini * ((1 + taxa_anual) ** (meses / 12.0)), 2)
+        return float(v_str) / 100.0
     except:
-        return v_ini
+        return 0.02
 
-if not df.empty and "Valor Inicial (R$)" in df.columns:
-    df["Valor_Num"] = df["Valor Inicial (R$)"].apply(tratar_valor_num)
+if not df.empty and "Projeção Dez/26 (R$)" in df.columns:
+    df["Valor_Ini_Num"] = df["Valor Inicial (R$)"].apply(tratar_valor_num)
+    df["Projecao_26_Num"] = df["Projeção Dez/26 (R$)"].apply(tratar_valor_num)
+    df["Taxa_Num"] = df["% Taxa Anual"].apply(tratar_taxa_num)
     
-    # Cálculos Dinâmicos
-    df["Valor_Hoje"] = df.apply(lambda r: calcular_valor_em_data(r, datetime.now().year, datetime.now().month), axis=1)
-    df["Valor_Dez_Atual"] = df.apply(lambda r: calcular_valor_em_data(r, ano_atual, 12), axis=1)
-    df["Valor_Dez_Seguinte"] = df.apply(lambda r: calcular_valor_em_data(r, ano_seguinte, 12), axis=1)
-    df["Reserva_Juros_Ano"] = df["Valor_Dez_Seguinte"] - df["Valor_Dez_Atual"]
+    # Cálculo dinâmico para o próximo ano com base na taxa de cada contrato
+    df["Projecao_27_Num"] = df.apply(
+        lambda r: round(r["Projecao_26_Num"] * (1.0 + r["Taxa_Num"]), 2) if r["Projecao_26_Num"] > 0 else 0.0,
+        axis=1
+    )
+    df["Reserva_Juros"] = df["Projecao_27_Num"] - df["Projecao_26_Num"]
 else:
     df = pd.DataFrame(columns=[
-        "ID", "Imóvel", "Locatário", "CPF/CNPJ", "Data Inicial", "Valor Inicial (R$)", "Indexador", "Status", "Data de Devolução", "Observação"
+        "ID", "Imóvel", "Locatário", "CPF/CNPJ", "Data Inicial", "Valor Inicial (R$)", 
+        "Indexador", "% Taxa Anual", "Projeção Dez/26 (R$)", "Projeção Dez/27 (R$)", 
+        "Status", "Data de Devolução", "Observação"
     ])
-    df["Valor_Num"] = 0.0
-    df["Valor_Hoje"] = 0.0
-    df["Valor_Dez_Atual"] = 0.0
-    df["Valor_Dez_Seguinte"] = 0.0
-    df["Reserva_Juros_Ano"] = 0.0
+    df["Valor_Ini_Num"] = 0.0
+    df["Projecao_26_Num"] = 0.0
+    df["Taxa_Num"] = 0.02
+    df["Projecao_27_Num"] = 0.0
+    df["Reserva_Juros"] = 0.0
 
 # --- ABA 1: DASHBOARD ---
 with aba_dash:
@@ -140,33 +120,33 @@ with aba_dash:
         df_ativas = df[df["Status"].astype(str).str.upper() == "ATIVA"]
         df_quitadas = df[df["Status"].astype(str).str.upper() != "ATIVA"]
         
-        tot_ini_ativas = df_ativas["Valor_Num"].sum()
-        tot_dez_atual = df_ativas["Valor_Dez_Atual"].sum()
-        tot_dez_seg = df_ativas["Valor_Dez_Seguinte"].sum()
-        tot_provisao_juros = df_ativas["Reserva_Juros_Ano"].sum()
+        tot_ini_ativas = df_ativas["Valor_Ini_Num"].sum()
+        tot_26_ativas = df_ativas["Projecao_26_Num"].sum()
+        tot_27_ativas = df_ativas["Projecao_27_Num"].sum()
+        tot_juros_reserva = df_ativas["Reserva_Juros"].sum()
         
-        st.subheader(f"📊 Resumo Geral de Cauções Ativas (Base: {ano_atual})")
+        st.subheader("📊 Resumo Geral de Cauções Ativas (Projeção 2026 ➔ 2027)")
         
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Contratos Ativos", f"{len(df_ativas)}")
-        c2.metric(f"Projeção Dez/{ano_atual}", f"R$ {tot_dez_atual:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        c3.metric(f"Projeção Dez/{ano_seguinte}", f"R$ {tot_dez_seg:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        c4.metric(f"Juros a Guardar ({ano_atual} ➔ {ano_seguinte})", f"R$ {tot_provisao_juros:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), delta=f"+ R$ {tot_provisao_juros:,.2f}")
+        c2.metric("Projeção Dez/2026", f"R$ {tot_26_ativas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        c3.metric("Projeção Dez/2027", f"R$ {tot_27_ativas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        c4.metric("Juros a Guardar (2026 ➔ 2027)", f"R$ {tot_juros_reserva:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), delta=f"+ R$ {tot_juros_reserva:,.2f}")
         
         st.markdown("---")
         col_g1, col_g2 = st.columns(2)
         
         with col_g1:
-            st.subheader(f"Projeção de Saldo por Indexador (Dez/{ano_seguinte})")
+            st.subheader("Saldo Retido por Indexador (Dez/2026)")
             if not df_ativas.empty:
-                fig_idx = px.pie(df_ativas, names="Indexador", values="Valor_Dez_Seguinte", hole=0.4, color_discrete_sequence=px.colors.qualitative.Set2)
+                fig_idx = px.pie(df_ativas, names="Indexador", values="Projecao_26_Num", hole=0.4, color_discrete_sequence=px.colors.qualitative.Set2)
                 st.plotly_chart(fig_idx, use_container_width=True)
                 
         with col_g2:
-            st.subheader(f"Top 7 Maior Provisão de Juros Necessária")
+            st.subheader("Top 7 Maiores Reservas de Juros Necessárias")
             if not df_ativas.empty:
-                df_top = df_ativas.sort_values("Reserva_Juros_Ano", ascending=False).head(7)
-                fig_top = px.bar(df_top, x="Reserva_Juros_Ano", y="Locatário", orientation="h", color="Indexador", labels={"Reserva_Juros_Ano": "Juros a Guardar (R$)"})
+                df_top = df_ativas.sort_values("Reserva_Juros", ascending=False).head(7)
+                fig_top = px.bar(df_top, x="Reserva_Juros", y="Locatário", orientation="h", color="Indexador", labels={"Reserva_Juros": "Juros a Guardar (R$)"})
                 fig_top.update_layout(yaxis=dict(autorange="reversed"))
                 st.plotly_chart(fig_top, use_container_width=True)
 
@@ -196,49 +176,63 @@ with aba_consulta:
             mask = df_f.apply(lambda r: r.astype(str).str.lower().str.contains(kw_l).any(), axis=1)
             df_f = df_f[mask]
             
-        st.write(f"**Registros encontrados:** {len(df_f)} | **Juros Totais a Guardar:** R$ {df_f['Reserva_Juros_Ano'].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        st.write(f"**Registros encontrados:** {len(df_f)} | **Juros Totais a Guardar:** R$ {df_f['Reserva_Juros'].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
         
-        # Formatação para tabela
-        df_f["Projeção Dez/26"] = df_f["Valor_Dez_Atual"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        df_f["Projeção Dez/27"] = df_f["Valor_Dez_Seguinte"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        df_f["Juros (26-27)"] = df_f["Reserva_Juros_Ano"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        df_f["Projeção 2026"] = df_f["Projecao_26_Num"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        df_f["Projeção 2027"] = df_f["Projecao_27_Num"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        df_f["Reserva Juros"] = df_f["Reserva_Juros"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
         
-        cols_show = ["ID", "Imóvel", "Locatário", "Valor Inicial (R$)", "Indexador", "Projeção Dez/26", "Projeção Dez/27", "Juros (26-27)", "Status", "Data de Devolução"]
+        cols_show = ["ID", "Imóvel", "Locatário", "Valor Inicial (R$)", "Indexador", "% Taxa Anual", "Projeção 2026", "Projeção 2027", "Reserva Juros", "Status"]
         cols_exist = [c for c in cols_show if c in df_f.columns]
         st.dataframe(df_f[cols_exist], use_container_width=True, hide_index=True)
 
 # --- ABA 3: NOVO DEPÓSITO ---
 with aba_novo:
     st.subheader("Cadastrar Nova Caução Recebida")
-    with st.form("form_nova_caucao", clear_on_submit=True):
-        col_n1, col_n2 = st.columns(2)
-        with col_n1:
-            imovel = st.text_input("Endereço / Imóvel *", placeholder="Ex: SQS 216 Bl C Apto 301")
-            locatario = st.text_input("Nome do Locatário / Inquilino *", placeholder="Ex: Flavia Pimentel")
-            cpf_cnpj = st.text_input("CPF / CNPJ do Locatário", placeholder="Ex: 000.000.000-00")
-        with col_n2:
-            dt_dep = st.date_input("Data do Depósito Inicial *", value=datetime.today(), format="DD/MM/YYYY")
-            valor_dep = st.number_input("Valor Inicial Depositado (R$) *", min_value=0.0, format="%.2f")
-            indexador = st.selectbox("Indexador de Correção *", ["TR", "Poupança (NOVA)", "Poup ant/Nova", "nenhum"])
-            obs = st.text_area("Observações Adicionais")
-            
-        btn_salvar_c = st.form_submit_button("💾 Salvar Caução", type="primary")
+    
+    col_n1, col_n2 = st.columns(2)
+    with col_n1:
+        imovel = st.text_input("Endereço / Imóvel *", placeholder="Ex: SQS 216 Bl C Apto 301")
+        locatario = st.text_input("Nome do Locatário / Inquilino *", placeholder="Ex: Flavia Pimentel")
+        cpf_cnpj = st.text_input("CPF / CNPJ do Locatário", placeholder="Ex: 000.000.000-00")
+        dt_dep = st.date_input("Data do Depósito Inicial *", value=datetime.today(), format="DD/MM/YYYY")
+    with col_n2:
+        valor_dep = st.number_input("Valor Inicial Depositado (R$) *", min_value=0.0, format="%.2f")
+        indexador = st.selectbox("Indexador de Correção *", ["TR", "Poupança (NOVA)", "Poup ant/Nova", "nenhum"])
         
-        if btn_salvar_c:
-            if valor_dep <= 0 or not imovel or not locatario:
-                st.error("⚠️ Preencha o imóvel, locatário e um valor maior que R$ 0,00.")
-            else:
-                try:
-                    prox_id = f"CAU-{len(df)+1:03d}"
-                    dt_fmt = dt_dep.strftime("%d/%m/%Y")
-                    v_fmt = f"R$ {valor_dep:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                    
-                    nova_linha = [prox_id, imovel, locatario, cpf_cnpj, dt_fmt, v_fmt, indexador, "Ativa", "", obs]
-                    sheet.append_row(nova_linha)
-                    st.success(f"✅ Caução {prox_id} registrada com sucesso!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Erro ao salvar: {e}")
+        # Sugestão dinâmica do percentual com possibilidade de alteração pelo usuário
+        sugestao_taxa = 2.0
+        if "POUP" in indexador.upper():
+            sugestao_taxa = 7.0
+        elif "NENHUM" in indexador.upper():
+            sugestao_taxa = 0.0
+            
+        taxa_custom = st.number_input("% Reajuste Anual Estimado *", min_value=0.0, max_value=50.0, value=sugestao_taxa, step=0.1, format="%.2f")
+        obs = st.text_area("Observações Adicionais")
+        
+    btn_salvar_c = st.button("💾 Salvar Caução", type="primary", use_container_width=True)
+    
+    if btn_salvar_c:
+        if valor_dep <= 0 or not imovel or not locatario:
+            st.error("⚠️ Preencha o imóvel, locatário e um valor maior que R$ 0,00.")
+        else:
+            try:
+                prox_id = f"CAU-{len(df)+1:03d}"
+                dt_fmt = dt_dep.strftime("%d/%m/%Y")
+                v_fmt = f"R$ {valor_dep:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                taxa_fmt = f"{taxa_custom:.1f}%".replace(".", ",")
+                
+                # Projeção inicial (Dez/26 base igual valor depositado se for do ano vigente)
+                p26_fmt = v_fmt
+                p27_calc = valor_dep * (1.0 + (taxa_custom / 100.0))
+                p27_fmt = f"R$ {p27_calc:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                
+                nova_linha = [prox_id, imovel, locatario, cpf_cnpj, dt_fmt, v_fmt, indexador, taxa_fmt, p26_fmt, p27_fmt, "Ativa", "", obs]
+                sheet.append_row(nova_linha)
+                st.success(f"✅ Caução {prox_id} registrada com sucesso!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao salvar: {e}")
 
 # --- ABA 4: QUITAR / DEVOLVER ---
 with aba_quitar:
@@ -256,7 +250,7 @@ with aba_quitar:
             linha_real_q = idx_q + 2
             dados_q = df.iloc[idx_q]
             
-            st.info(f"Contrato Selecionado: **{dados_q['Imóvel']}** | Inquilino: **{dados_q['Locatário']}** | Projeção Dez/{ano_atual}: **R$ {dados_q['Valor_Dez_Atual']:,.2f}**")
+            st.info(f"Contrato Selecionado: **{dados_q['Imóvel']}** | Inquilino: **{dados_q['Locatário']}** | Base Dez/2026: **R$ {dados_q['Projecao_26_Num']:,.2f}**")
             
             with st.form("form_quitar_caucao"):
                 dt_dev = st.date_input("Data de Devolução / Quitação *", value=datetime.today(), format="DD/MM/YYYY")
@@ -266,10 +260,10 @@ with aba_quitar:
                 
                 if btn_baixa:
                     try:
-                        sheet.update_cell(linha_real_q, 8, "Quitada/Devolvida")
-                        sheet.update_cell(linha_real_q, 9, dt_dev.strftime("%d/%m/%Y"))
-                        sheet.update_cell(linha_real_q, 10, obs_dev)
-                        st.success("✅ Caução quitada com sucesso e arquivada nas movimentações passadas!")
+                        sheet.update_cell(linha_real_q, 11, "Quitada/Devolvida")
+                        sheet.update_cell(linha_real_q, 12, dt_dev.strftime("%d/%m/%Y"))
+                        sheet.update_cell(linha_real_q, 13, obs_dev)
+                        st.success("✅ Caução quitada com sucesso e arquivada!")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Erro ao atualizar quitação: {e}")
@@ -300,9 +294,11 @@ with aba_editar:
                         ed_loc = st.text_input("Locatário", value=str(dados_e.get("Locatário", "")))
                         ed_cpf = st.text_input("CPF/CNPJ", value=str(dados_e.get("CPF/CNPJ", "")))
                         ed_dt = st.text_input("Data Inicial", value=str(dados_e.get("Data Inicial", "")))
-                    with e2:
                         ed_val = st.text_input("Valor Inicial (R$)", value=str(dados_e.get("Valor Inicial (R$)", "")))
+                    with e2:
                         ed_idx = st.text_input("Indexador", value=str(dados_e.get("Indexador", "")))
+                        ed_taxa = st.text_input("% Taxa Anual", value=str(dados_e.get("% Taxa Anual", "2,0%")))
+                        ed_p26 = st.text_input("Projeção Dez/26 (R$)", value=str(dados_e.get("Projeção Dez/26 (R$)", "")))
                         ed_st = st.selectbox("Status", ["Ativa", "Quitada/Devolvida"], index=0 if str(dados_e.get("Status")).upper()=="ATIVA" else 1)
                         ed_dt_dev = st.text_input("Data de Devolução", value=str(dados_e.get("Data de Devolução", "")))
                     
@@ -315,8 +311,10 @@ with aba_editar:
                             sheet.update_cell(linha_real_e, 5, ed_dt)
                             sheet.update_cell(linha_real_e, 6, ed_val)
                             sheet.update_cell(linha_real_e, 7, ed_idx)
-                            sheet.update_cell(linha_real_e, 8, ed_st)
-                            sheet.update_cell(linha_real_e, 9, ed_dt_dev)
+                            sheet.update_cell(linha_real_e, 8, ed_taxa)
+                            sheet.update_cell(linha_real_e, 9, ed_p26)
+                            sheet.update_cell(linha_real_e, 11, ed_st)
+                            sheet.update_cell(linha_real_e, 12, ed_dt_dev)
                             st.success("✅ Registro atualizado!")
                             st.rerun()
                         except Exception as e:
