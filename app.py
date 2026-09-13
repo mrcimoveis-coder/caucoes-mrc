@@ -27,7 +27,6 @@ def conectar_google_sheets():
     
     credentials = Credentials.from_service_account_info(credenciais_dict, scopes=SCOPES)
     client = gspread.authorize(credentials)
-    # ID da planilha Caucoes_MRC integrado abaixo:
     return client.open_by_key("1OE3lN6bLUAemM_PyrsrVtN4BqMc-zrH1sCy5qzWGmrk").sheet1
 
 # 3. Autenticação de Acesso
@@ -62,10 +61,10 @@ except Exception as e:
     st.stop()
 
 st.title("🔐 Gestão de Cauções de Aluguel — MRC Imóveis")
-st.write("Controle de depósitos, cálculo de rendimentos (TR / Poupança) e devoluções de garantias.")
+st.write("Controle de depósitos, cálculo de rendimentos e provisão de juros futuros.")
 
 aba_dash, aba_consulta, aba_novo, aba_quitar, aba_editar = st.tabs([
-    "📊 Dashboard & Rendimentos", 
+    "📊 Dashboard & Projeções", 
     "🔍 Consulta & Pendências", 
     "➕ Novo Depósito", 
     "✅ Quitar / Devolver", 
@@ -75,7 +74,7 @@ aba_dash, aba_consulta, aba_novo, aba_quitar, aba_editar = st.tabs([
 dados_raw = sheet.get_all_records()
 df = pd.DataFrame(dados_raw) if dados_raw else pd.DataFrame()
 
-# Tratamento Numérico e Cálculo de Correção
+# Tratamento Numérico e Funções de Projeção
 def tratar_valor_num(v):
     v_str = str(v).replace("R$", "").replace(".", "").replace(",", ".").strip()
     try:
@@ -83,10 +82,20 @@ def tratar_valor_num(v):
     except:
         return 0.0
 
-def calcular_valor_corrigido(row):
+ano_atual = datetime.now().year
+ano_seguinte = ano_atual + 1
+
+def obter_taxa_anual(idx_type):
+    idx = str(idx_type).upper()
+    if "POUP" in idx:
+        return 0.07  # Poupança (7.0% a.a.)
+    elif "NENHUM" in idx:
+        return 0.0
+    return 0.02  # Padrão TR (2.0% a.a.)
+
+def calcular_valor_em_data(row, target_year, target_month=12):
     v_ini = row.get("Valor_Num", 0.0)
     dt_str = str(row.get("Data Inicial", "")).strip()
-    idx_type = str(row.get("Indexador", "TR")).upper()
     
     if not dt_str or v_ini <= 0:
         return v_ini
@@ -96,33 +105,32 @@ def calcular_valor_corrigido(row):
         if pd.isna(dt_ini):
             return v_ini
         
-        hoje = datetime.now()
-        meses = (hoje.year - dt_ini.year) * 12 + (hoje.month - dt_ini.month)
+        meses = (target_year - dt_ini.year) * 12 + (target_month - dt_ini.month)
         if meses < 0:
             meses = 0
             
-        taxa_anual = 0.02  # Padrão TR (2% a.a.)
-        if "POUP" in idx_type:
-            taxa_anual = 0.07  # Padrão Poupança (7% a.a.)
-        elif "NENHUM" in idx_type:
-            taxa_anual = 0.0
-            
-        v_corr = v_ini * ((1 + taxa_anual) ** (meses / 12.0))
-        return round(v_corr, 2)
+        taxa_anual = obter_taxa_anual(row.get("Indexador", "TR"))
+        return round(v_ini * ((1 + taxa_anual) ** (meses / 12.0)), 2)
     except:
         return v_ini
 
 if not df.empty and "Valor Inicial (R$)" in df.columns:
     df["Valor_Num"] = df["Valor Inicial (R$)"].apply(tratar_valor_num)
-    df["Valor_Corrigido"] = df.apply(calcular_valor_corrigido, axis=1)
-    df["Rendimento"] = df["Valor_Corrigido"] - df["Valor_Num"]
+    
+    # Cálculos Dinâmicos
+    df["Valor_Hoje"] = df.apply(lambda r: calcular_valor_em_data(r, datetime.now().year, datetime.now().month), axis=1)
+    df["Valor_Dez_Atual"] = df.apply(lambda r: calcular_valor_em_data(r, ano_atual, 12), axis=1)
+    df["Valor_Dez_Seguinte"] = df.apply(lambda r: calcular_valor_em_data(r, ano_seguinte, 12), axis=1)
+    df["Reserva_Juros_Ano"] = df["Valor_Dez_Seguinte"] - df["Valor_Dez_Atual"]
 else:
     df = pd.DataFrame(columns=[
         "ID", "Imóvel", "Locatário", "CPF/CNPJ", "Data Inicial", "Valor Inicial (R$)", "Indexador", "Status", "Data de Devolução", "Observação"
     ])
     df["Valor_Num"] = 0.0
-    df["Valor_Corrigido"] = 0.0
-    df["Rendimento"] = 0.0
+    df["Valor_Hoje"] = 0.0
+    df["Valor_Dez_Atual"] = 0.0
+    df["Valor_Dez_Seguinte"] = 0.0
+    df["Reserva_Juros_Ano"] = 0.0
 
 # --- ABA 1: DASHBOARD ---
 with aba_dash:
@@ -133,30 +141,32 @@ with aba_dash:
         df_quitadas = df[df["Status"].astype(str).str.upper() != "ATIVA"]
         
         tot_ini_ativas = df_ativas["Valor_Num"].sum()
-        tot_corr_ativas = df_ativas["Valor_Corrigido"].sum()
-        tot_rendimento = tot_corr_ativas - tot_ini_ativas
+        tot_dez_atual = df_ativas["Valor_Dez_Atual"].sum()
+        tot_dez_seg = df_ativas["Valor_Dez_Seguinte"].sum()
+        tot_provisao_juros = df_ativas["Reserva_Juros_Ano"].sum()
         
-        st.subheader("Indicadores Gerais de Garantias Retidas")
+        st.subheader(f"📊 Resumo Geral de Cauções Ativas (Base: {ano_atual})")
+        
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Cauções Ativas", f"{len(df_ativas)} contratos")
-        c2.metric("Total Retido (Inicial)", f"R$ {tot_ini_ativas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        c3.metric("Total Corrigido (Atual)", f"R$ {tot_corr_ativas:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), delta=f"R$ {tot_rendimento:,.2f}")
-        c4.metric("Cauções Devolvidas", f"{len(df_quitadas)} contratos")
+        c1.metric("Contratos Ativos", f"{len(df_ativas)}")
+        c2.metric(f"Projeção Dez/{ano_atual}", f"R$ {tot_dez_atual:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        c3.metric(f"Projeção Dez/{ano_seguinte}", f"R$ {tot_dez_seg:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        c4.metric(f"Juros a Guardar ({ano_atual} ➔ {ano_seguinte})", f"R$ {tot_provisao_juros:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."), delta=f"+ R$ {tot_provisao_juros:,.2f}")
         
         st.markdown("---")
         col_g1, col_g2 = st.columns(2)
         
         with col_g1:
-            st.subheader("Distribuição por Indexador (Ativas)")
+            st.subheader(f"Projeção de Saldo por Indexador (Dez/{ano_seguinte})")
             if not df_ativas.empty:
-                fig_idx = px.pie(df_ativas, names="Indexador", values="Valor_Corrigido", hole=0.4, color_discrete_sequence=px.colors.qualitative.Set2)
+                fig_idx = px.pie(df_ativas, names="Indexador", values="Valor_Dez_Seguinte", hole=0.4, color_discrete_sequence=px.colors.qualitative.Set2)
                 st.plotly_chart(fig_idx, use_container_width=True)
                 
         with col_g2:
-            st.subheader("Maiores Cauções Retidas")
+            st.subheader(f"Top 7 Maior Provisão de Juros Necessária")
             if not df_ativas.empty:
-                df_top = df_ativas.sort_values("Valor_Corrigido", ascending=False).head(7)
-                fig_top = px.bar(df_top, x="Valor_Corrigido", y="Locatário", orientation="h", color="Indexador", labels={"Valor_Corrigido": "Valor Corrigido (R$)"})
+                df_top = df_ativas.sort_values("Reserva_Juros_Ano", ascending=False).head(7)
+                fig_top = px.bar(df_top, x="Reserva_Juros_Ano", y="Locatário", orientation="h", color="Indexador", labels={"Reserva_Juros_Ano": "Juros a Guardar (R$)"})
                 fig_top.update_layout(yaxis=dict(autorange="reversed"))
                 st.plotly_chart(fig_top, use_container_width=True)
 
@@ -186,9 +196,14 @@ with aba_consulta:
             mask = df_f.apply(lambda r: r.astype(str).str.lower().str.contains(kw_l).any(), axis=1)
             df_f = df_f[mask]
             
-        st.write(f"**Registros encontrados:** {len(df_f)} | **Subtotal Corrigido:** R$ {df_f['Valor_Corrigido'].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        st.write(f"**Registros encontrados:** {len(df_f)} | **Juros Totais a Guardar:** R$ {df_f['Reserva_Juros_Ano'].sum():,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
         
-        cols_show = ["ID", "Imóvel", "Locatário", "CPF/CNPJ", "Data Inicial", "Valor Inicial (R$)", "Indexador", "Valor_Corrigido", "Status", "Data de Devolução", "Observação"]
+        # Formatação para tabela
+        df_f["Projeção Dez/26"] = df_f["Valor_Dez_Atual"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        df_f["Projeção Dez/27"] = df_f["Valor_Dez_Seguinte"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        df_f["Juros (26-27)"] = df_f["Reserva_Juros_Ano"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        
+        cols_show = ["ID", "Imóvel", "Locatário", "Valor Inicial (R$)", "Indexador", "Projeção Dez/26", "Projeção Dez/27", "Juros (26-27)", "Status", "Data de Devolução"]
         cols_exist = [c for c in cols_show if c in df_f.columns]
         st.dataframe(df_f[cols_exist], use_container_width=True, hide_index=True)
 
@@ -241,7 +256,7 @@ with aba_quitar:
             linha_real_q = idx_q + 2
             dados_q = df.iloc[idx_q]
             
-            st.info(f"Contrato Selecionado: **{dados_q['Imóvel']}** | Inquilino: **{dados_q['Locatário']}** | Valor Corrigido Estimado: **R$ {dados_q['Valor_Corrigido']:,.2f}**")
+            st.info(f"Contrato Selecionado: **{dados_q['Imóvel']}** | Inquilino: **{dados_q['Locatário']}** | Projeção Dez/{ano_atual}: **R$ {dados_q['Valor_Dez_Atual']:,.2f}**")
             
             with st.form("form_quitar_caucao"):
                 dt_dev = st.date_input("Data de Devolução / Quitação *", value=datetime.today(), format="DD/MM/YYYY")
