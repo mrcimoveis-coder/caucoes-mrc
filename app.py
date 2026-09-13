@@ -27,8 +27,8 @@ def conectar_google_sheets():
     
     credentials = Credentials.from_service_account_info(credenciais_dict, scopes=SCOPES)
     client = gspread.authorize(credentials)
-    # INSIRA O ID DA SUA PLANILHA AQUI ABAIXO:
-    return client.open_by_key("SEU_ID_DA_PLANILHA_AQUI").sheet1
+    # ID da planilha Caucoes_MRC integrado abaixo:
+    return client.open_by_key("1OE3lN6bLUAemM_PyrsrVtN4BqMc-zrH1sCy5qzWGmrk").sheet1
 
 # 3. Autenticação de Acesso
 USUARIOS = {
