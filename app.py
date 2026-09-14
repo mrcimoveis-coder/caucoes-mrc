@@ -60,7 +60,7 @@ except Exception as e:
     st.error(f"❌ Erro de conexão com o Google Sheets: {e}")
     st.stop()
 
-# Definição Dinâmica de Anos (Piloto Automático)
+# Definição Dinâmica de Anos
 ano_atual = datetime.now().year
 ano_seguinte = ano_atual + 1
 anos_passados_base = max(0, ano_atual - 2026)
@@ -234,7 +234,6 @@ with aba_novo:
                 v_fmt = f"R$ {valor_dep:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                 taxa_fmt = f"{taxa_custom:.1f}%".replace(".", ",")
                 
-                # Cálculo da projeção ancorada no repositório base de 2026
                 p26_calc = valor_dep / ((1.0 + (taxa_custom / 100.0)) ** anos_passados_base) if anos_passados_base > 0 else valor_dep
                 p27_calc = p26_calc * (1.0 + (taxa_custom / 100.0))
                 
@@ -248,7 +247,7 @@ with aba_novo:
             except Exception as e:
                 st.error(f"Erro ao salvar: {e}")
 
-# --- ABA 4: QUITAR / DEVOLVER ---
+# --- ABA 4: QUITAR / DEVOLVER (MELHORADA COM BUSCA) ---
 with aba_quitar:
     st.subheader("Dar Baixa em Caução Devolvida ao Inquilino")
     df_ativas_q = df[df["Status"].astype(str).str.upper() == "ATIVA"]
@@ -256,48 +255,67 @@ with aba_quitar:
     if df_ativas_q.empty:
         st.info("Não há cauções ativas pendentes de devolução.")
     else:
-        df_ativas_q["ID_Select"] = df_ativas_q.index.astype(str) + " - [" + df_ativas_q["ID"].astype(str) + "] " + df_ativas_q["Locatário"].astype(str) + " (" + df_ativas_q["Valor Inicial (R$)"].astype(str) + ")"
-        item_q = st.selectbox("Selecione a caução para dar baixa:", [""] + df_ativas_q["ID_Select"].tolist())
-        
-        if item_q:
-            idx_q = int(item_q.split(" - ")[0])
-            linha_real_q = idx_q + 2
-            dados_q = df.iloc[idx_q]
+        kw_q = st.text_input("🔎 Pesquisar para dar baixa (Nome, Imóvel, CPF/CNPJ ou ID):", key="search_quitar_input")
+        if kw_q:
+            kw_q_l = kw_q.lower()
+            mask_q = df_ativas_q.apply(lambda r: r.astype(str).str.lower().str.contains(kw_q_l).any(), axis=1)
+            df_ativas_q = df_ativas_q[mask_q]
             
-            st.info(f"Contrato Selecionado: **{dados_q['Imóvel']}** | Inquilino: **{dados_q['Locatário']}** | Projeção Dez/{ano_atual}: **R$ {dados_q['Projecao_Atual_Num']:,.2f}**")
-            
-            with st.form("form_quitar_caucao"):
-                dt_dev = st.date_input("Data de Devolução / Quitação *", value=datetime.today(), format="DD/MM/YYYY")
-                obs_dev = st.text_input("Observação da Quitação", value="Caução devolvida integralmente ao término do contrato.")
-                
-                btn_baixa = st.form_submit_button("✅ Confirmar Devolução e Retirar das Pendências", type="primary")
-                
-                if btn_baixa:
-                    try:
-                        sheet.update_cell(linha_real_q, 11, "Quitada/Devolvida")
-                        sheet.update_cell(linha_real_q, 12, dt_dev.strftime("%d/%m/%Y"))
-                        sheet.update_cell(linha_real_q, 13, obs_dev)
-                        st.success("✅ Caução quitada com sucesso e arquivada!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro ao atualizar quitação: {e}")
+        if df_ativas_q.empty:
+            st.warning("⚠️ Nenhuma caução ativa encontrada com esse termo de pesquisa.")
+        else:
+            options_dict_q = {}
+            for idx_q, row_q in df_ativas_q.iterrows():
+                lbl = f"[{row_q.get('ID', '')}] {row_q.get('Locatário', '')} — {row_q.get('Imóvel', '')} ({row_q.get('Valor Inicial (R$)', '')})"
+                options_dict_q[lbl] = idx_q
 
-# --- ABA 5: EDITAR / EXCLUIR ---
+            item_q_lbl = st.selectbox("Selecione a caução para dar baixa:", [""] + list(options_dict_q.keys()), key="select_quitar_item")
+            
+            if item_q_lbl:
+                idx_q = options_dict_q[item_q_lbl]
+                linha_real_q = idx_q + 2
+                dados_q = df.iloc[idx_q]
+                
+                st.info(f"📍 **Imóvel:** {dados_q.get('Imóvel', '')} | 👤 **Inquilino:** {dados_q.get('Locatário', '')} | 💰 **Projeção Dez/{ano_atual}:** R$ {dados_q.get('Projecao_Atual_Num', 0.0):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+                
+                with st.form("form_quitar_caucao"):
+                    dt_dev = st.date_input("Data de Devolução / Quitação *", value=datetime.today(), format="DD/MM/YYYY")
+                    obs_dev = st.text_input("Observação da Quitação", value="Caução devolvida integralmente ao término do contrato.")
+                    
+                    btn_baixa = st.form_submit_button("✅ Confirmar Devolução e Retirar das Pendências", type="primary")
+                    
+                    if btn_baixa:
+                        try:
+                            sheet.update_cell(linha_real_q, 11, "Quitada/Devolvida")
+                            sheet.update_cell(linha_real_q, 12, dt_dev.strftime("%d/%m/%Y"))
+                            sheet.update_cell(linha_real_q, 13, obs_dev)
+                            st.success("✅ Caução quitada com sucesso e arquivada!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao atualizar quitação: {e}")
+
+# --- ABA 5: EDITAR / EXCLUIR (MELHORADA COM BUSCA) ---
 with aba_editar:
     st.subheader("Gerenciar e Editar Lançamentos")
     if not df.empty:
-        kw_ed = st.text_input("🔎 Pesquisar para alterar ou apagar:")
+        kw_ed = st.text_input("🔎 Pesquisar para alterar ou apagar (Nome, Imóvel, CPF ou ID):", key="search_editar_input")
         df_e = df.copy()
         if kw_ed:
             mask_e = df_e.apply(lambda r: r.astype(str).str.lower().str.contains(kw_ed.lower()).any(), axis=1)
             df_e = df_e[mask_e]
             
-        if not df_e.empty:
-            df_e["ID_Edit"] = df_e.index.astype(str) + " - [" + df_e["ID"].astype(str) + "] " + df_e["Locatário"].astype(str)
-            item_e = st.selectbox("Selecione para editar ou excluir:", [""] + df_e["ID_Edit"].tolist())
+        if df_e.empty:
+            st.warning("⚠️ Nenhum registro encontrado com esse termo de pesquisa.")
+        else:
+            options_dict_e = {}
+            for idx_e, row_e in df_e.iterrows():
+                lbl = f"[{row_e.get('ID', '')}] {row_e.get('Locatário', '')} — {row_e.get('Imóvel', '')} ({row_e.get('Status', '')})"
+                options_dict_e[lbl] = idx_e
+                
+            item_e_lbl = st.selectbox("Selecione para editar ou excluir:", [""] + list(options_dict_e.keys()), key="select_editar_item")
             
-            if item_e:
-                idx_e = int(item_e.split(" - ")[0])
+            if item_e_lbl:
+                idx_e = options_dict_e[item_e_lbl]
                 linha_real_e = idx_e + 2
                 dados_e = df.iloc[idx_e]
                 
