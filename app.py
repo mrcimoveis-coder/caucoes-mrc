@@ -195,7 +195,7 @@ with aba_consulta:
         df_f[col_lbl_seg] = df_f["Projecao_Seguinte_Num"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
         df_f["Reserva Juros"] = df_f["Reserva_Juros"].apply(lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
         
-        cols_show = ["ID", "Imóvel", "Locatário", "Valor Inicial (R$)", "Indexador", "% Taxa Anual", col_lbl_atual, col_lbl_seg, "Reserva Juros", "Status"]
+        cols_show = ["ID", "Imóvel", "Locatário", "CPF/CNPJ", "Data Inicial", "Valor Inicial (R$)", "Indexador", "% Taxa Anual", col_lbl_atual, col_lbl_seg, "Reserva Juros", "Status"]
         cols_exist = [c for c in cols_show if c in df_f.columns]
         st.dataframe(df_f[cols_exist], use_container_width=True, hide_index=True)
 
@@ -247,7 +247,7 @@ with aba_novo:
             except Exception as e:
                 st.error(f"Erro ao salvar: {e}")
 
-# --- ABA 4: QUITAR / DEVOLVER (MELHORADA COM BUSCA) ---
+# --- ABA 4: QUITAR / DEVOLVER (EXIBINDO DATA INICIAL E DADOS COMPLETOS) ---
 with aba_quitar:
     st.subheader("Dar Baixa em Caução Devolvida ao Inquilino")
     df_ativas_q = df[df["Status"].astype(str).str.upper() == "ATIVA"]
@@ -266,7 +266,7 @@ with aba_quitar:
         else:
             options_dict_q = {}
             for idx_q, row_q in df_ativas_q.iterrows():
-                lbl = f"[{row_q.get('ID', '')}] {row_q.get('Locatário', '')} — {row_q.get('Imóvel', '')} ({row_q.get('Valor Inicial (R$)', '')})"
+                lbl = f"[{row_q.get('ID', '')}] {row_q.get('Locatário', '')} — {row_q.get('Imóvel', '')} (Início: {row_q.get('Data Inicial', 'N/I')} | Valor: {row_q.get('Valor Inicial (R$)', 'R$ 0,00')})"
                 options_dict_q[lbl] = idx_q
 
             item_q_lbl = st.selectbox("Selecione a caução para dar baixa:", [""] + list(options_dict_q.keys()), key="select_quitar_item")
@@ -276,7 +276,15 @@ with aba_quitar:
                 linha_real_q = idx_q + 2
                 dados_q = df.iloc[idx_q]
                 
-                st.info(f"📍 **Imóvel:** {dados_q.get('Imóvel', '')} | 👤 **Inquilino:** {dados_q.get('Locatário', '')} | 💰 **Projeção Dez/{ano_atual}:** R$ {dados_q.get('Projecao_Atual_Num', 0.0):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+                # Ficha Resumo do Contrato para Encerramento Seguro
+                st.markdown("#### 📋 Ficha de Conferência para Devolução / Encerramento")
+                col_c1, col_c2, col_c3, col_c4 = st.columns(4)
+                col_c1.metric("🗓️ Data Inicial Depósito", str(dados_q.get('Data Inicial', 'N/I')))
+                col_c2.metric("💵 Valor Inicial Depositado", str(dados_q.get('Valor Inicial (R$)', 'R$ 0,00')))
+                col_c3.metric("📈 Indexador / Taxa", f"{dados_q.get('Indexador', '')} ({dados_q.get('% Taxa Anual', '')})")
+                col_c4.metric(f"📊 Projeção Estimada Dez/{ano_atual}", f"R$ {dados_q.get('Projecao_Atual_Num', 0.0):,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+                
+                st.info(f"📍 **Imóvel:** {dados_q.get('Imóvel', '')} | 👤 **Inquilino:** {dados_q.get('Locatário', '')} (CPF/CNPJ: {dados_q.get('CPF/CNPJ', 'N/I')})")
                 
                 with st.form("form_quitar_caucao"):
                     dt_dev = st.date_input("Data de Devolução / Quitação *", value=datetime.today(), format="DD/MM/YYYY")
@@ -294,7 +302,7 @@ with aba_quitar:
                         except Exception as e:
                             st.error(f"Erro ao atualizar quitação: {e}")
 
-# --- ABA 5: EDITAR / EXCLUIR (MELHORADA COM BUSCA) ---
+# --- ABA 5: EDITAR / EXCLUIR ---
 with aba_editar:
     st.subheader("Gerenciar e Editar Lançamentos")
     if not df.empty:
@@ -309,7 +317,7 @@ with aba_editar:
         else:
             options_dict_e = {}
             for idx_e, row_e in df_e.iterrows():
-                lbl = f"[{row_e.get('ID', '')}] {row_e.get('Locatário', '')} — {row_e.get('Imóvel', '')} ({row_e.get('Status', '')})"
+                lbl = f"[{row_e.get('ID', '')}] {row_e.get('Locatário', '')} — {row_e.get('Imóvel', '')} (Início: {row_e.get('Data Inicial', 'N/I')})"
                 options_dict_e[lbl] = idx_e
                 
             item_e_lbl = st.selectbox("Selecione para editar ou excluir:", [""] + list(options_dict_e.keys()), key="select_editar_item")
